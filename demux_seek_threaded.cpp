@@ -1,4 +1,3 @@
-
 #include <iostream>
 #include <string>
 #include <thread>
@@ -14,6 +13,7 @@ extern "C" {
 #include <libavutil/imgutils.h>
 #include <libavutil/time.h>
 #include <libavutil/error.h>
+#include <libavutil/md5.h>
 }
 
 #include <sys/select.h> // for select(), fd_set
@@ -36,20 +36,6 @@ void restoreTerminalSettings() {
 void cleanupKeyboard() {
     restoreTerminalSettings(); // Restore terminal settings on cleanup
 }
-
-// void initKeyboard() {
-//     termios term;
-//     tcgetattr(STDIN_FILENO, &term);
-//     term.c_lflag &= ~(ICANON | ECHO);
-//     tcsetattr(STDIN_FILENO, TCSANOW, &term);
-//     fcntl(STDIN_FILENO, F_SETFL, O_NONBLOCK);
-// }
-//
-// char getKey() {
-//     char ch = 0;
-//     read(STDIN_FILENO, &ch, 1);
-//     return ch;
-// }
 
 class FFmpegDemuxSeeker {
 public:
@@ -194,27 +180,81 @@ private:
        seek_requested = true;
    }
 
+   // void printFrameInfo(AVFrame* frame) {
+   //     char pict_type_char = av_get_picture_type_char(frame->pict_type);
+   //     char pict_type_str[] = { pict_type_char, '\0' };
+   //
+   //     double timestamp = (frame->pts != AV_NOPTS_VALUE)
+   //         ? frame->pts * av_q2d(fmt_ctx->streams[video_stream_index]->time_base)
+   //         : -1;
+   //
+   //     std::cout << "Frame #" << frame_number++
+   //               << " | Type: " << pict_type_str
+   //               << " | PTS: " << frame->pts
+   //               << " | Timestamp: " << timestamp << "s"
+   //               << " | Resolution: " << frame->width << "x" << frame->height
+   //               << "\n";
+   //     //update the current_pos here
+   //     if (frame->pts != AV_NOPTS_VALUE) {
+   //        current_pos = av_rescale_q(frame->pts,
+   //              fmt_ctx->streams[video_stream_index]->time_base,
+   //              AV_TIME_BASE_Q);
+   //     }
+   // }
+
    void printFrameInfo(AVFrame* frame) {
+       // Initialize MD5 context
+       AVMD5* md5 = av_md5_alloc();
+       if (!md5) {
+           std::cerr << "Failed to allocate MD5 context\n";
+           return;
+       }
+
+       av_md5_init(md5);
+
+       // Hash the pixel data
+       for (int plane = 0; plane < AV_NUM_DATA_POINTERS && frame->data[plane]; plane++) {
+           int linesize = frame->linesize[plane];
+           int height = (plane == 0 || frame->format == AV_PIX_FMT_GRAY8) ? frame->height : frame->height / 2;
+
+           for (int y = 0; y < height; y++) {
+               av_md5_update(md5, frame->data[plane] + y * linesize, linesize);
+           }
+       }
+
+       uint8_t digest[16];
+       av_md5_final(md5, digest);
+       av_free(md5);
+
+       // Format MD5 as hex string
+       char md5string[33];
+       for (int i = 0; i < 16; i++) {
+           snprintf(md5string + i * 2, 3, "%02x", digest[i]);
+       }
+
        char pict_type_char = av_get_picture_type_char(frame->pict_type);
-       char pict_type_str[] = { pict_type_char, '\0' };
 
        double timestamp = (frame->pts != AV_NOPTS_VALUE)
            ? frame->pts * av_q2d(fmt_ctx->streams[video_stream_index]->time_base)
            : -1;
 
        std::cout << "Frame #" << frame_number++
-                 << " | Type: " << pict_type_str
+                 << " | Type: " << pict_type_char
                  << " | PTS: " << frame->pts
+                 << " | DTS: " << frame->pkt_dts
                  << " | Timestamp: " << timestamp << "s"
                  << " | Resolution: " << frame->width << "x" << frame->height
+                 << " | Decoded frm MD5: " << md5string
                  << "\n";
-       //update the current_pos here
+
+       // Update the current_pos here
        if (frame->pts != AV_NOPTS_VALUE) {
-          current_pos = av_rescale_q(frame->pts,
-                fmt_ctx->streams[video_stream_index]->time_base,
-                AV_TIME_BASE_Q);
+           current_pos = av_rescale_q(frame->pts,
+                 fmt_ctx->streams[video_stream_index]->time_base,
+                 AV_TIME_BASE_Q);
        }
    }
+
    //blocking
    char getch() {
        char buf = 0;
