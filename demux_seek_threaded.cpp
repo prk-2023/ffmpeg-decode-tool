@@ -71,6 +71,40 @@ public:
 
        duration = fmt_ctx->duration;
        std::cout << "Loaded: " << filename << ", duration: " << (duration / AV_TIME_BASE) << " sec\n";
+       // Print general format-level info
+       std::cout << "Input file: " << fmt_ctx->url << "\n";
+       AVCodecParameters* codecpar = nullptr;
+       AVStream* video_stream = nullptr;
+       int video_stream_index = -1;
+       
+       // Find the best video stream
+       for (unsigned int i = 0; i < fmt_ctx->nb_streams; ++i) {
+          if (fmt_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+             video_stream = fmt_ctx->streams[i];
+             codecpar = video_stream->codecpar;
+             video_stream_index = i;
+             break;
+          }
+       }
+       if (!video_stream || !codecpar)
+          throw std::runtime_error("No video stream found");
+       const char* codec_name = codec ? codec->long_name : "unknown";
+
+       // Duration (in seconds)
+       double duration_sec = (fmt_ctx->duration != AV_NOPTS_VALUE)
+          ? fmt_ctx->duration * av_q2d(AV_TIME_BASE_Q)
+          : 0;
+
+       // Bitrate (in kbps)
+       int64_t bitrate = fmt_ctx->bit_rate;
+
+       std::cout << "Video stream index: " << video_stream_index << "\n";
+       std::cout << "Encoded format: " << codec_name << "\n";
+       std::cout << "Codec ID: " << codecpar->codec_id << "\n";
+       std::cout << "Resolution: " << codecpar->width << "x" << codecpar->height << "\n";
+       std::cout << "Pixel format: " << av_get_pix_fmt_name((AVPixelFormat)codecpar->format) << "\n";
+       std::cout << "Duration: " << duration_sec << " seconds\n";
+       std::cout << "Bitrate: " << (bitrate / 1000) << " kbps\n";
    }
 
    ~FFmpegDemuxSeeker() {
@@ -213,12 +247,14 @@ private:
        av_md5_init(md5);
 
        // Hash the pixel data
+       // int frame_size = 0;
        for (int plane = 0; plane < AV_NUM_DATA_POINTERS && frame->data[plane]; plane++) {
            int linesize = frame->linesize[plane];
            int height = (plane == 0 || frame->format == AV_PIX_FMT_GRAY8) ? frame->height : frame->height / 2;
 
            for (int y = 0; y < height; y++) {
                av_md5_update(md5, frame->data[plane] + y * linesize, linesize);
+               // frame_size += linesize; //accumulated size
            }
        }
 
@@ -238,12 +274,20 @@ private:
            ? frame->pts * av_q2d(fmt_ctx->streams[video_stream_index]->time_base)
            : -1;
 
+       // int buffer_size = av_image_get_buffer_size((AVPixelFormat)frame->format,
+       //                                         frame->width, frame->height, 1);
+
+       const char* pix_fmt_name = av_get_pix_fmt_name(static_cast<AVPixelFormat>(frame->format));
+
        std::cout << "Frame #" << frame_number++
                  << " | Type: " << pict_type_char
                  << " | PTS: " << frame->pts
                  << " | DTS: " << frame->pkt_dts
                  << " | Timestamp: " << timestamp << "s"
                  << " | Resolution: " << frame->width << "x" << frame->height
+                 //<< " | Frame Size: " << frame_size << " bytes"
+                 //<< " | Estimated Buffer Size: " << buffer_size << " bytes"
+                 << " | Pixel fmt: " << (pix_fmt_name ? pix_fmt_name : "unknown")
                  << " | Decoded frm MD5: " << md5string
                  << "\n";
 
