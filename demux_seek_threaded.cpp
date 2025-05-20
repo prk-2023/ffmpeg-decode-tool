@@ -104,7 +104,9 @@ public:
        std::cout << "Resolution: " << codecpar->width << "x" << codecpar->height << "\n";
        std::cout << "Pixel format: " << av_get_pix_fmt_name((AVPixelFormat)codecpar->format) << "\n";
        std::cout << "Duration: " << duration_sec << " seconds\n";
-       std::cout << "Bitrate: " << (bitrate / 1000) << " kbps\n";
+       std::cout << "Overall Bitrate:(includes all streams) " << (bitrate / 1000) << " kbps\n";
+       std::cout << "Video stream Bitrate: " << (codecpar->bit_rate / 1000) << " kbps\n";
+
    }
 
    ~FFmpegDemuxSeeker() {
