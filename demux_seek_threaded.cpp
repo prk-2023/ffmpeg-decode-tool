@@ -1,3 +1,4 @@
+#include <cstring>
 #include <iostream>
 #include <string>
 #include <thread>
@@ -22,6 +23,11 @@ extern "C" {
 
 #define SEEK_STEP 5 // seconds
 
+enum DecoderType {
+   SOFTWARE,
+   HARDWARE
+};
+
 struct termios originalTermSettings;
 // Function to save the original terminal settings
 void saveTerminalSettings() {
@@ -39,10 +45,11 @@ void cleanupKeyboard() {
 
 class FFmpegDemuxSeeker {
 public:
-   FFmpegDemuxSeeker(const std::string& filename)
+   FFmpegDemuxSeeker(const std::string& filename, DecoderType decoder_type = SOFTWARE )
        : fmt_ctx(nullptr), codec_ctx(nullptr), video_stream_index(-1),
          current_pos(0), duration(0), frame_number(0),
-         quit_flag(false), seek_requested(false), seek_offset(0) {
+         quit_flag(false), seek_requested(false), seek_offset(0),
+         decoder_type(decoder_type) {
 
        if (avformat_open_input(&fmt_ctx, filename.c_str(), nullptr, nullptr) < 0)
            throw std::runtime_error("Failed to open file");
@@ -60,9 +67,23 @@ public:
        if (video_stream_index == -1)
            throw std::runtime_error("No video stream found");
 
-       const AVCodec* codec = avcodec_find_decoder(fmt_ctx->streams[video_stream_index]->codecpar->codec_id);
+       // const AVCodec* codec = avcodec_find_decoder(fmt_ctx->streams[video_stream_index]->codecpar->codec_id);
+       // if (!codec)
+       //     throw std::runtime_error("Unsupported codec");
+       // Choose codec based on the requested decoder type:
+       const AVCodec *codec = nullptr;
+       if (decoder_type == SOFTWARE) { 
+          codec = avcodec_find_decoder(fmt_ctx->streams[video_stream_index]->codecpar->codec_id);
+       } else if ( decoder_type == HARDWARE) {
+          codec = avcodec_find_decoder_by_name("h264_v4l2m2m");
+          if (!codec) {
+             std::cerr << "[Error] v4l2_m2m decoder not found, falling back to SW decoder";
+             //fallback
+             codec = avcodec_find_decoder(fmt_ctx->streams[video_stream_index]->codecpar->codec_id); 
+          }
+       }
        if (!codec)
-           throw std::runtime_error("Unsupported codec");
+          throw std::runtime_error("Unsupported codec");
 
        codec_ctx = avcodec_alloc_context3(codec);
        avcodec_parameters_to_context(codec_ctx, fmt_ctx->streams[video_stream_index]->codecpar);
@@ -106,6 +127,7 @@ public:
        std::cout << "Duration: " << duration_sec << " seconds\n";
        std::cout << "Overall Bitrate:(includes all streams) " << (bitrate / 1000) << " kbps\n";
        std::cout << "Video stream Bitrate: " << (codecpar->bit_rate / 1000) << " kbps\n";
+       std::cout << "Decoder used : " << (codec->name) << "\n";
 
    }
 
@@ -125,6 +147,7 @@ public:
    }
 
 private:
+   DecoderType decoder_type;
    AVFormatContext* fmt_ctx;
    AVCodecContext* codec_ctx;
    int video_stream_index;
@@ -201,6 +224,7 @@ private:
            char c = getch_select(); //non-blocking
            if (c == 'q') {
                quit_flag = true;
+               std::cout << "[Quit]\n";
                break;
            } else if (c == 's') {
                requestSeek(SEEK_STEP * AV_TIME_BASE);
@@ -348,13 +372,20 @@ private:
 
 int main(int argc, char* argv[]) {
     saveTerminalSettings();
-    if (argc < 2) {
-        std::cerr << "Usage: ./ffmpeg_seeker <input_file>\n";
+    if (argc < 3) {
+        std::cerr << "Usage: ./ffmpeg_seeker <input_file> <Decoder Type:HW/SW>\n";
         return 1;
     }
-
+    DecoderType decoder;
+    if (strncmp(argv[2],"SW", 2) == 0)
+       decoder = SOFTWARE;
+    else if ( strncmp(argv[2], "HW", 2) == 0)
+       decoder = HARDWARE;
+    else 
+       decoder = SOFTWARE; //default 
+                                       //
     try {
-        FFmpegDemuxSeeker demux_seeker(argv[1]);
+        FFmpegDemuxSeeker demux_seeker(argv[1], decoder);
         demux_seeker.run();
     } catch (const std::exception& ex) {
         std::cerr << "Error: " << ex.what() << "\n";
