@@ -46,10 +46,10 @@ void cleanupKeyboard() {
 class FFmpegDemuxSeeker {
 public:
    FFmpegDemuxSeeker(const std::string& filename, DecoderType decoder_type = SOFTWARE )
-       : fmt_ctx(nullptr), codec_ctx(nullptr), video_stream_index(-1),
-         current_pos(0), duration(0), frame_number(0),
-         quit_flag(false), seek_requested(false), seek_offset(0),
-         decoder_type(decoder_type) {
+       : decoder_type(decoder_type), fmt_ctx(nullptr), codec_ctx(nullptr), video_stream_index(-1),
+         current_pos(0), duration(0), frame_number(0), 
+         quit_flag(false), seek_requested(false), seek_offset(0)
+         {
 
        if (avformat_open_input(&fmt_ctx, filename.c_str(), nullptr, nullptr) < 0)
            throw std::runtime_error("Failed to open file");
