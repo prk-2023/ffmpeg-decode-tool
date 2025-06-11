@@ -80,7 +80,6 @@ class FFmpegDemuxSeeker {
          }
       } else {
          av_log_set_level(AV_LOG_INFO);  // Default log level
-         printf("=>DBG<= We should not be here\n");
       }
       if (avformat_open_input(&fmt_ctx, filename.c_str(), nullptr, nullptr) < 0)
          throw std::runtime_error("Failed to open file");
@@ -121,8 +120,8 @@ class FFmpegDemuxSeeker {
          codec_ctx->flags2 |= AV_CODEC_FLAG2_SHOW_ALL;
          //Force errors to be visible ( SW decode only)
          if ( decoder_type == SOFTWARE ) { 
-            // confirm the below flags are used only by FFMpeg SW decoders for error detection
-            // testing on 1619 : HW decoding does not support ( instead use is_hw_frame_corrupt() below)
+            // confirmed the below flags are used only by FFMpeg SW decoders for error detection
+            // on 1619 : HW decoding does not support them ( instead use is_hw_frame_corrupt() below)
             codec_ctx->err_recognition = 
                AV_EF_CAREFUL   | 
                AV_EF_CRCCHECK  |
