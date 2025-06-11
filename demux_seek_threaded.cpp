@@ -349,6 +349,28 @@ class FFmpegDemuxSeeker {
 
          char pict_type_char = av_get_picture_type_char(frame->pict_type);
 
+         if (frame->pts == AV_NOPTS_VALUE)
+            std::cout << "[NOTICE] Frame missing PTS\n";
+         
+         if (frame->pict_type == AV_PICTURE_TYPE_NONE)
+            std::cout << "[NOTICE] Frame picture type unknown\n";
+
+         // uncomment the below  HW decoder missing PTS/DTS and we wish to fix this.
+         // For this tool we do not fix (purpose is to raw comparision)
+         // bool use_best_effort = true;  //TODO: controlled via config or CLI arg
+         // int64_t raw_pts = frame->pts;
+         // int64_t effective_pts = -1;
+         // if (use_best_effort) {
+         //   effective_pts = (frame->best_effort_timestamp != AV_NOPTS_VALUE)
+         //           ? frame->best_effort_timestamp
+         //           : (frame->pts != AV_NOPTS_VALUE ? frame->pts : -1);
+         // } else {
+         //      effective_pts = frame->pts;
+         // }
+         // double timestamp = (effective_pts != -1)
+         //          ? effective_pts * av_q2d(fmt_ctx->streams[video_stream_index]->time_base)
+         //          : -1;
+
          double timestamp = (frame->pts != AV_NOPTS_VALUE)
             ? frame->pts * av_q2d(fmt_ctx->streams[video_stream_index]->time_base)
             : -1;
