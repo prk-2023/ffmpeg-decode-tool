@@ -22,6 +22,7 @@ extern "C" {
 #include <fcntl.h>      // for file control options (not used here but often helpful)
 
 #define SEEK_STEP 5 // seconds
+const char* loglevel = nullptr; // DEBUG Level
 
 enum DecoderType {
    SOFTWARE,
@@ -50,6 +51,38 @@ class FFmpegDemuxSeeker {
          current_pos(0), duration(0), frame_number(0), 
          quit_flag(false), seek_requested(false), seek_offset(0)
    {
+      // enable debug
+      // av_log_set_level(AV_LOG_INFO);
+      // av_log_set_level(AV_LOG_QUIET); // no output
+      // av_log_set_level(AV_LOG_PANIC); // for unrecoverable errors that can cause prog to crash
+      // av_log_set_level(AV_LOG_FATAL); // serious errors that might stop the program.
+      // av_log_set_level(AV_LOG_ERROR); // Standard error messages (e.g., decoding failure).
+      // av_log_set_level(AV_LOG_WARNING); // Warnings (recoverable problems).
+      // av_log_set_level(AV_LOG_INFO);  // basic info
+      // av_log_set_level(AV_LOG_VERBOSE);  // more then basic info
+      // av_log_set_level(AV_LOG_DEBUG);  // Extremely detailed debug information.
+      // av_log_set_level(AV_LOG_TRACE);  // All messages, including very low-level function calls.
+      // Trace should print 
+      // - decoder state transitions
+      // - frame timestamps
+      // - HW acceleratio"info"ls 
+      // - Internal buffer allocation information 
+
+      if (loglevel) {
+         printf(" Debug level: %s \n", loglevel);
+         if (strncmp(loglevel, "trace", 5) == 0) {  
+            av_log_set_level(AV_LOG_TRACE); 
+         } else if (strncmp(loglevel, "info", 4) == 0) {
+            av_log_set_level(AV_LOG_INFO); 
+         } else if (strncmp(loglevel, "debug", 5) == 0) {
+            av_log_set_level(AV_LOG_DEBUG); 
+         } else {
+            av_log_set_level(AV_LOG_INFO); 
+         }
+      } else {
+         av_log_set_level(AV_LOG_INFO);  // Default log level
+         printf("=>DBG<= We should not be here\n");
+      }
       if (avformat_open_input(&fmt_ctx, filename.c_str(), nullptr, nullptr) < 0)
          throw std::runtime_error("Failed to open file");
 
@@ -346,6 +379,11 @@ class FFmpegDemuxSeeker {
 };
 
 //---
+//
+//
+//
+//
+//
 int main(int argc, char* argv[]) {
    const char* inputFile = nullptr;
    const char* decoderStr = nullptr; //"SW";  // default
@@ -353,7 +391,7 @@ int main(int argc, char* argv[]) {
    DecoderType decoder = SOFTWARE;
 
    int opt;
-   while ((opt = getopt(argc, argv, "i:d:c:h")) != -1) {
+   while ((opt = getopt(argc, argv, "i:d:c:v:h")) != -1) {
       switch (opt) {
          case 'i':
             inputFile = optarg;
@@ -363,6 +401,9 @@ int main(int argc, char* argv[]) {
             break;
          case 'c':
             codecStr = optarg;
+            break;
+         case 'v': 
+            loglevel = optarg;
             break;
          case 'h':
          default:
@@ -394,6 +435,7 @@ int main(int argc, char* argv[]) {
    }
 
    saveTerminalSettings();
+
 
    try {
       FFmpegDemuxSeeker demux_seeker(inputFile, decoder, codecStr);
