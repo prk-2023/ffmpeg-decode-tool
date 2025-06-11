@@ -51,17 +51,16 @@ class FFmpegDemuxSeeker {
          current_pos(0), duration(0), frame_number(0), 
          quit_flag(false), seek_requested(false), seek_offset(0)
    {
-      // enable debug
-      // av_log_set_level(AV_LOG_INFO);
-      // av_log_set_level(AV_LOG_QUIET); // no output
-      // av_log_set_level(AV_LOG_PANIC); // for unrecoverable errors that can cause prog to crash
-      // av_log_set_level(AV_LOG_FATAL); // serious errors that might stop the program.
-      // av_log_set_level(AV_LOG_ERROR); // Standard error messages (e.g., decoding failure).
-      // av_log_set_level(AV_LOG_WARNING); // Warnings (recoverable problems).
-      // av_log_set_level(AV_LOG_INFO);  // basic info
-      // av_log_set_level(AV_LOG_VERBOSE);  // more then basic info
-      // av_log_set_level(AV_LOG_DEBUG);  // Extremely detailed debug information.
-      // av_log_set_level(AV_LOG_TRACE);  // All messages, including very low-level function calls.
+      // debug levels  av_log_set_level(AV_LOG_INFO); default
+      // AV_LOG_QUIE; // no output
+      // AV_LOG_PANIC // for unrecoverable errors that can cause prog to crash
+      // AV_LOG_FATAL // serious errors that might stop the program.
+      // AV_LOG_ERROR // Standard error messages (e.g., decoding failure).
+      // AV_LOG_WARNING // Warnings (recoverable problems).
+      // AV_LOG_INFO  // basic info
+      // AV_LOG_VERBOSE  // more then basic info
+      // AV_LOG_DEBUG  // Extremely detailed debug information.
+      // AV_LOG_TRACE  // All messages, including very low-level function calls.
       // Trace should print 
       // - decoder state transitions
       // - frame timestamps
@@ -116,6 +115,24 @@ class FFmpegDemuxSeeker {
          throw std::runtime_error("Unsupported codec");
 
       codec_ctx = avcodec_alloc_context3(codec);
+      if (codec_ctx) {
+         codec_ctx->flags |= AV_CODEC_FLAG_OUTPUT_CORRUPT; // TODO need to check if this is true for HW
+                                                           // decode
+         codec_ctx->flags2 |= AV_CODEC_FLAG2_SHOW_ALL;
+         //Force errors to be visible ( SW decode only)
+         if ( decoder_type == SOFTWARE ) { 
+            // confirm the below flags are used only by FFMpeg SW decoders for error detection
+            // testing on 1619 : HW decoding does not support ( instead use is_hw_frame_corrupt() below)
+            codec_ctx->err_recognition = 
+               AV_EF_CAREFUL   | 
+               AV_EF_CRCCHECK  |
+               AV_EF_BITSTREAM | //bitstream errors
+               AV_EF_BUFFER    | // check buffer boundaries
+               AV_EF_EXPLODE    //aborts on error ( can not conceal )
+               ;
+         }
+      }
+
       avcodec_parameters_to_context(codec_ctx, fmt_ctx->streams[video_stream_index]->codecpar);
       if (avcodec_open2(codec_ctx, codec, nullptr) < 0)
          throw std::runtime_error("Failed to open codec");
@@ -232,12 +249,40 @@ class FFmpegDemuxSeeker {
             if (packet->stream_index == video_stream_index) {
                if (avcodec_send_packet(codec_ctx, packet) == 0) {
                   while (avcodec_receive_frame(codec_ctx, frame) == 0) {
-                     printFrameInfo(frame);
-                  }
+                     bool is_corrupt = false;
+                     if (frame->flags & AV_FRAME_FLAG_CORRUPT || 
+                           frame->decode_error_flags || 
+                           (packet && (packet->flags & AV_PKT_FLAG_CORRUPT))
+                        ) 
+                     {
+                        is_corrupt = true;
+                        std::cout << "\n=== CORRUPTION DETECTED === \n";
+                        std::cout << "\nPacket PTS: " << (packet ? packet->pts : -1);
+                        std::cout << "\nFrame PTS: " << frame->pts;
+                        std::cout << "\nError Flags: " << std::hex << frame->decode_error_flags << std::dec;
+                        printFrameInfo(frame); // This will now show macroblock map
+                     } else {
+                        printFrameInfo(frame); // Normal frame output
+                     }
+
+                     // if(frame->flags & AV_FRAME_FLAG_CORRUPT) {
+                     //    printf("[Warning] Corrupted frame detected at PTS %" PRId64 "\n", frame->pts);
+                     // }
+                     // // check if any part of frame (macroblocks) are affected
+                     // if (packet->flags & AV_PKT_FLAG_CORRUPT) {
+                     //    printf("[WARNING] Corrupted packet detected at PTS %" PRId64"\n", packet->pts);
+                     // }
+                     // // print frame info 
+                     // printFrameInfo(frame);
+                     if (is_hw_frame_corrupt(frame)) {
+                        std::cerr << "[HW] Visual corruption detected (PTS: " << frame->pts << ")\n";
+                        is_corrupt = true;
+                     }
+                  } //--
                }
             }
             av_packet_unref(packet);
-            usleep(5000); // reduce CPU usage
+            usleep(3300); // reduce CPU usage ( set to 30 fps )
          }
 
          av_frame_free(&frame);
@@ -332,6 +377,39 @@ class FFmpegDemuxSeeker {
                   fmt_ctx->streams[video_stream_index]->time_base,
                   AV_TIME_BASE_Q);
          }
+
+         if (frame->decode_error_flags) {
+            if (frame->decode_error_flags & FF_DECODE_ERROR_INVALID_BITSTREAM)
+               std::cout << "[WARNING] Invalid Bitstream!!!! \n";
+            if (frame->decode_error_flags & FF_DECODE_ERROR_MISSING_REFERENCE)
+               std::cout << "[WARNING] Missing Reference!!!! \n";
+            if (frame->decode_error_flags & FF_DECODE_ERROR_CONCEALMENT_ACTIVE) {
+               std::cout << "[WARNING] Error Concealment Used!!!! \n";
+               std::cout << "[Concealment Active] PTS: " << frame->pts << "\n";
+            }
+         }
+      }
+
+      bool is_hw_frame_corrupt(AVFrame* frame) {
+         // Check for solid-color frames in common HW formats
+         // TODO : handle DRM_PRIME if required
+
+         // if (frame->format == AV_PIX_FMT_DRM_PRIME || frame->format == AV_PIX_FMT_NV12) {
+         if ( frame->format == AV_PIX_FMT_NV12) {
+            // For NV12, check the Y plane (luma) for solid color
+            if (frame->data[0] && frame->linesize[0] > 0) {
+               const int sample_size = 10;
+               const uint8_t first_pixel = frame->data[0][0];
+   
+               // Sample top-left corner pixels
+               for (int i = 0; i < sample_size; i++) {
+                   if (frame->data[0][i] != first_pixel) 
+                       return false;
+               }
+               return true; // Likely corrupted (solid color)
+            }
+         }
+         return false;
       }
 
       //blocking
@@ -378,12 +456,7 @@ class FFmpegDemuxSeeker {
       }
 };
 
-//---
-//
-//
-//
-//
-//
+// Main
 int main(int argc, char* argv[]) {
    const char* inputFile = nullptr;
    const char* decoderStr = nullptr; //"SW";  // default
