@@ -129,6 +129,7 @@ class FFmpegDemuxSeeker {
                AV_EF_BUFFER    | // check buffer boundaries
                AV_EF_EXPLODE    //aborts on error ( can not conceal )
                ;
+            codec_ctx->debug = FF_DEBUG_MB_TYPE | FF_DEBUG_SKIP;// macroblock works SW H.264
          }
       }
 
