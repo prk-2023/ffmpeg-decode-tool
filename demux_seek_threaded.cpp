@@ -282,7 +282,8 @@ class FFmpegDemuxSeeker {
                }
             }
             av_packet_unref(packet);
-            usleep(3300); // reduce CPU usage ( set to 30 fps )
+            //usleep(3300); // reduce CPU usage ( set to 30 fps )
+            usleep(9000); // reduce CPU usage ( set to 30 fps )
          }
 
          av_frame_free(&frame);
@@ -412,6 +413,76 @@ class FFmpegDemuxSeeker {
          }
       }
 
+      /* Visual artifact detection in frame buffer 
+       * Analyze decoded Y/U/V planes for 
+       * 1. Solid colors 
+       *    Y-plane solid check detects black/green/solid output typical of decoder error Concealment 
+       * 2. Flat regions 
+       *    UV-plane flatness check identifies gray/green block corruption (e.g. U=128, V=128 uniform) 
+       * 3. Dead Pixels or strips 
+       *
+       */
+      bool is_hw_frame_corrupt(AVFrame* frame) {
+         // Check known HW output formats 
+         if (frame->format == AV_PIX_FMT_NV12) {
+            // --- Solid Y plane check (black/green/pink screen, etc.)
+            if (frame->data[0] && frame->linesize[0] > 0) {
+               const uint8_t reference = frame->data[0][0];
+               const int stride = frame->linesize[0];
+               const int height = frame->height;
+
+               int solid_count = 0;
+               int sample_lines = std::min(10, height);  // sample only a few lines
+
+               for (int y = 0; y < sample_lines; ++y) {
+                  uint8_t* row = frame->data[0] + y * stride;
+                  bool uniform_line = true;
+
+                  for (int x = 1; x < frame->width; ++x) {
+                     if (row[x] != reference) {
+                        uniform_line = false;
+                        break;
+                     }
+                  }
+
+                  if (uniform_line)
+                     solid_count++;
+               }
+
+               if (solid_count == sample_lines) {
+                  // Very likely a corrupted frame (solid color)
+                  return true;
+               }
+            }
+
+            // Optional: Add U/V plane check for highly compressed color distortions
+            // Example: check U and V planes for flat regions or 0x80 artifacts
+            if (frame->format == AV_PIX_FMT_NV12 && frame->data[1]) {
+               int uv_stride = frame->linesize[1];
+               uint8_t* uv_data = frame->data[1];
+
+               // Just check first row of UV interleaved
+               const uint8_t u0 = uv_data[0];
+               const uint8_t v0 = uv_data[1];
+               bool uv_flat = true;
+
+               for (int x = 2; x < frame->width; x += 2) {
+                  if (uv_data[x] != u0 || uv_data[x + 1] != v0) {
+                     uv_flat = false;
+                     break;
+                  }
+               }
+
+               if (uv_flat) {
+                  // UV too flat → may be gray/green block artifact
+                  return true;
+               }
+            }
+         }
+
+         return false;
+      }
+#if 0
       bool is_hw_frame_corrupt(AVFrame* frame) {
          // Check for solid-color frames in common HW formats
          // TODO : handle DRM_PRIME if required
@@ -422,18 +493,18 @@ class FFmpegDemuxSeeker {
             if (frame->data[0] && frame->linesize[0] > 0) {
                const int sample_size = 10;
                const uint8_t first_pixel = frame->data[0][0];
-   
+
                // Sample top-left corner pixels
                for (int i = 0; i < sample_size; i++) {
-                   if (frame->data[0][i] != first_pixel) 
-                       return false;
+                  if (frame->data[0][i] != first_pixel) 
+                     return false;
                }
                return true; // Likely corrupted (solid color)
             }
          }
          return false;
       }
-
+#endif
       //blocking
       char getch() {
          char buf = 0;
@@ -476,71 +547,71 @@ class FFmpegDemuxSeeker {
          tcsetattr(STDIN_FILENO, TCSANOW, &oldt); // restore original terminal settings
          return ch;
       }
-};
+      };
 
-// Main
-int main(int argc, char* argv[]) {
-   const char* inputFile = nullptr;
-   const char* decoderStr = nullptr; //"SW";  // default
-   const char* codecStr = nullptr;
-   DecoderType decoder = SOFTWARE;
+      // Main
+      int main(int argc, char* argv[]) {
+         const char* inputFile = nullptr;
+         const char* decoderStr = nullptr; //"SW";  // default
+         const char* codecStr = nullptr;
+         DecoderType decoder = SOFTWARE;
 
-   int opt;
-   while ((opt = getopt(argc, argv, "i:d:c:v:h")) != -1) {
-      switch (opt) {
-         case 'i':
-            inputFile = optarg;
-            break;
-         case 'd':
-            decoderStr = optarg;
-            break;
-         case 'c':
-            codecStr = optarg;
-            break;
-         case 'v': 
-            loglevel = optarg;
-            break;
-         case 'h':
-         default:
+         int opt;
+         while ((opt = getopt(argc, argv, "i:d:c:v:h")) != -1) {
+            switch (opt) {
+               case 'i':
+                  inputFile = optarg;
+                  break;
+               case 'd':
+                  decoderStr = optarg;
+                  break;
+               case 'c':
+                  codecStr = optarg;
+                  break;
+               case 'v': 
+                  loglevel = optarg;
+                  break;
+               case 'h':
+               default:
+                  std::cerr << "Usage: " << argv[0]
+                     << " -i <input_file> [-d HW|SW] [-c <codec>]\n";
+                  return 1;
+            }
+         }
+         //check options
+         if (!inputFile || !decoderStr || !codecStr) {
+            std::cerr << "Error: Missing required options -i and/or -d\n";
             std::cerr << "Usage: " << argv[0]
-               << " -i <input_file> [-d HW|SW] [-c <codec>]\n";
+               << " -i <input_file> -d <HW|SW> [-c <codec>]\n";
+            std::cerr << "Usage: " << argv[0] << " -i <input_file> -d <DecoderType: HW|SW> [-c <if decoderType is HW: codec_name>]\n";
+            std::cerr << "  ex1: " << argv[0] << " -i <input_file> -d HW -c hevc_v4l2m2m\n";
+            std::cerr << "  ex2: " << argv[0] << " -i <input_file> -d SW -c auto [for SW decode use auto]\n";
             return 1;
+         }
+         // Validate decoder option and codec option
+         if (strncmp(decoderStr, "HW", 2) == 0) {
+            decoder = HARDWARE;
+         } else if (strncmp(decoderStr, "SW", 2) == 0) {
+            decoder = SOFTWARE;
+         } else {
+            std::cerr << "Error: Invalid decoder type '" << decoderStr
+               << "'. Must be HW or SW.\n";
+
+            return 1;
+         }
+
+         saveTerminalSettings();
+
+
+         try {
+            FFmpegDemuxSeeker demux_seeker(inputFile, decoder, codecStr);
+            demux_seeker.run();
+         } catch (const std::exception& ex) {
+            std::cerr << "Error: " << ex.what() << "\n";
+            cleanupKeyboard();
+            return 1;
+         }
+
+         cleanupKeyboard();
+         return 0;
       }
-   }
-   //check options
-   if (!inputFile || !decoderStr || !codecStr) {
-      std::cerr << "Error: Missing required options -i and/or -d\n";
-      std::cerr << "Usage: " << argv[0]
-         << " -i <input_file> -d <HW|SW> [-c <codec>]\n";
-      std::cerr << "Usage: " << argv[0] << " -i <input_file> -d <DecoderType: HW|SW> [-c <if decoderType is HW: codec_name>]\n";
-      std::cerr << "  ex1: " << argv[0] << " -i <input_file> -d HW -c hevc_v4l2m2m\n";
-      std::cerr << "  ex2: " << argv[0] << " -i <input_file> -d SW -c auto [for SW decode use auto]\n";
-      return 1;
-   }
-   // Validate decoder option and codec option
-   if (strncmp(decoderStr, "HW", 2) == 0) {
-      decoder = HARDWARE;
-   } else if (strncmp(decoderStr, "SW", 2) == 0) {
-      decoder = SOFTWARE;
-   } else {
-      std::cerr << "Error: Invalid decoder type '" << decoderStr
-         << "'. Must be HW or SW.\n";
-
-      return 1;
-   }
-
-   saveTerminalSettings();
-
-
-   try {
-      FFmpegDemuxSeeker demux_seeker(inputFile, decoder, codecStr);
-      demux_seeker.run();
-   } catch (const std::exception& ex) {
-      std::cerr << "Error: " << ex.what() << "\n";
-      cleanupKeyboard();
-      return 1;
-   }
-
-   cleanupKeyboard();
-   return 0;
-}
