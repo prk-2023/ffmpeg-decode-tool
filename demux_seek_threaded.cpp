@@ -282,8 +282,7 @@ class FFmpegDemuxSeeker {
                }
             }
             av_packet_unref(packet);
-            //usleep(3300); // reduce CPU usage ( set to 30 fps )
-            usleep(9000); // reduce CPU usage ( set to 30 fps )
+            usleep(3300); // reduce CPU usage ( set to 30 fps )
          }
 
          av_frame_free(&frame);
