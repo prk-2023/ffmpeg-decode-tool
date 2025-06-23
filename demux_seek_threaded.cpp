@@ -46,11 +46,20 @@ void cleanupKeyboard() {
 
 class FFmpegDemuxSeeker {
    public:
-      FFmpegDemuxSeeker(const std::string& filename, DecoderType decoder_type , const std::string& codecName = nullptr) 
-         : decoder_type(decoder_type), fmt_ctx(nullptr), codec_ctx(nullptr), video_stream_index(-1),
-         current_pos(0), duration(0), frame_number(0), 
-         quit_flag(false), seek_requested(false), seek_offset(0)
-   {
+   FFmpegDemuxSeeker(const std::string& filename, DecoderType decoder_type , const std::string& codecName = nullptr, bool enable_hash = false)
+   : decoder_type(decoder_type),
+     enable_hash(enable_hash),
+     codecStr(nullptr),
+     fmt_ctx(nullptr),
+     codec_ctx(nullptr),
+     video_stream_index(-1),
+     current_pos(0),
+     duration(0),
+     frame_number(0),
+     seek_offset(0),
+     quit_flag(false),
+     seek_requested(false)
+  {
       // debug levels  av_log_set_level(AV_LOG_INFO); default
       // AV_LOG_QUIE; // no output
       // AV_LOG_PANIC // for unrecoverable errors that can cause prog to crash
@@ -195,6 +204,7 @@ class FFmpegDemuxSeeker {
 
    private:
       DecoderType decoder_type;
+      bool enable_hash;
       const char* codecStr = nullptr;
       AVFormatContext* fmt_ctx;
       AVCodecContext* codec_ctx;
@@ -203,10 +213,10 @@ class FFmpegDemuxSeeker {
       int64_t duration;
       int64_t frame_number;
 
-      std::atomic<bool> quit_flag;
-      std::atomic<bool> seek_requested;
-      std::mutex seek_mutex;
       int64_t seek_offset; // in microseconds
+      std::atomic<bool> quit_flag;
+      std::mutex seek_mutex;
+      std::atomic<bool> seek_requested;
 
       void demuxLoop() {
          AVPacket* packet = av_packet_alloc();
@@ -249,13 +259,13 @@ class FFmpegDemuxSeeker {
             if (packet->stream_index == video_stream_index) {
                if (avcodec_send_packet(codec_ctx, packet) == 0) {
                   while (avcodec_receive_frame(codec_ctx, frame) == 0) {
-                     bool is_corrupt = false;
+                     // bool is_corrupt = false;
                      if (frame->flags & AV_FRAME_FLAG_CORRUPT || 
                            frame->decode_error_flags || 
                            (packet && (packet->flags & AV_PKT_FLAG_CORRUPT))
                         ) 
                      {
-                        is_corrupt = true;
+                        // is_corrupt = true;
                         std::cout << "\n=== CORRUPTION DETECTED === \n";
                         std::cout << "\nPacket PTS: " << (packet ? packet->pts : -1);
                         std::cout << "\nFrame PTS: " << frame->pts;
@@ -276,7 +286,7 @@ class FFmpegDemuxSeeker {
                      // printFrameInfo(frame);
                      if (is_hw_frame_corrupt(frame)) {
                         std::cerr << "[HW] Visual corruption detected (PTS: " << frame->pts << ")\n";
-                        is_corrupt = true;
+                        // is_corrupt = true;
                      }
                   } //--
                }
@@ -317,42 +327,45 @@ class FFmpegDemuxSeeker {
       }
 
       void printFrameInfo(AVFrame* frame) {
-         // Initialize MD5 context
-         AVMD5* md5 = av_md5_alloc();
-         if (!md5) {
-            std::cerr << "Failed to allocate MD5 context\n";
-            return;
-         }
-
-         av_md5_init(md5);
-
-         // Hash the pixel data
-         // int frame_size = 0;
-         for (int plane = 0; plane < AV_NUM_DATA_POINTERS && frame->data[plane]; plane++) {
-            int linesize = frame->linesize[plane];
-            int height = (plane == 0 || frame->format == AV_PIX_FMT_GRAY8) ? frame->height : frame->height / 2;
-
-            for (int y = 0; y < height; y++) {
-               av_md5_update(md5, frame->data[plane] + y * linesize, linesize);
-               // frame_size += linesize; //accumulated size
-            }
-         }
-
-         uint8_t digest[16];
-         av_md5_final(md5, digest);
-         av_free(md5);
-
-         // Format MD5 as hex string
          char md5string[33];
-         for (int i = 0; i < 16; i++) {
-            snprintf(md5string + i * 2, 3, "%02x", digest[i]);
+         if (enable_hash) { 
+            // Initialize MD5 context
+            AVMD5* md5 = av_md5_alloc();
+            if (!md5) {
+               std::cerr << "Failed to allocate MD5 context\n";
+               return;
+            }
+
+            av_md5_init(md5);
+
+            // Hash the pixel data
+            // int frame_size = 0;
+            for (int plane = 0; plane < AV_NUM_DATA_POINTERS && frame->data[plane]; plane++) {
+               int linesize = frame->linesize[plane];
+               int height = (plane == 0 || frame->format == AV_PIX_FMT_GRAY8) ? frame->height : frame->height / 2;
+
+               for (int y = 0; y < height; y++) {
+                  av_md5_update(md5, frame->data[plane] + y * linesize, linesize);
+                  // frame_size += linesize; //accumulated size
+               }
+            }
+
+            uint8_t digest[16];
+            av_md5_final(md5, digest);
+            av_free(md5);
+
+            // Format MD5 as hex string
+            // char md5string[33];
+            for (int i = 0; i < 16; i++) {
+               snprintf(md5string + i * 2, 3, "%02x", digest[i]);
+            }
          }
 
          char pict_type_char = av_get_picture_type_char(frame->pict_type);
 
          if (frame->pts == AV_NOPTS_VALUE)
             std::cout << "[NOTICE] Frame missing PTS\n";
-         
+
          if (frame->pict_type == AV_PICTURE_TYPE_NONE)
             std::cout << "[NOTICE] Frame picture type unknown\n";
 
@@ -381,17 +394,28 @@ class FFmpegDemuxSeeker {
 
          const char* pix_fmt_name = av_get_pix_fmt_name(static_cast<AVPixelFormat>(frame->format));
 
-         std::cout << "Frame #" << frame_number++
-            << " | Type: " << pict_type_char
-            << " | PTS: " << frame->pts
-            << " | DTS: " << frame->pkt_dts
-            << " | Timestamp: " << timestamp << "s"
-            << " | Resolution: " << frame->width << "x" << frame->height
-            //<< " | Frame Size: " << frame_size << " bytes"
-            //<< " | Estimated Buffer Size: " << buffer_size << " bytes"
-            << " | Pixel fmt: " << (pix_fmt_name ? pix_fmt_name : "unknown")
-            << " | Decoded frm MD5: " << md5string
-            << "\n";
+         if (enable_hash) {
+            std::cout << "Frame #" << frame_number++
+               << " | Type: " << pict_type_char
+               << " | PTS: " << frame->pts
+               << " | DTS: " << frame->pkt_dts
+               << " | Timestamp: " << timestamp << "s"
+               << " | Resolution: " << frame->width << "x" << frame->height
+               //<< " | Frame Size: " << frame_size << " bytes"
+               //<< " | Estimated Buffer Size: " << buffer_size << " bytes"
+               << " | Pixel fmt: " << (pix_fmt_name ? pix_fmt_name : "unknown")
+               << " | Decoded frm MD5: " << md5string
+               << "\n";
+         } else {
+            std::cout << "Frame #" << frame_number++
+               << " | Type: " << pict_type_char
+               << " | PTS: " << frame->pts
+               << " | DTS: " << frame->pkt_dts
+               << " | Timestamp: " << timestamp << "s"
+               << " | Resolution: " << frame->width << "x" << frame->height
+               << " | Pixel fmt: " << (pix_fmt_name ? pix_fmt_name : "unknown")
+               << "\n";
+         }
 
          // Update the current_pos here
          if (frame->pts != AV_NOPTS_VALUE) {
@@ -553,10 +577,12 @@ class FFmpegDemuxSeeker {
          const char* inputFile = nullptr;
          const char* decoderStr = nullptr; //"SW";  // default
          const char* codecStr = nullptr;
+         const char* enable_hash_str = nullptr;
          DecoderType decoder = SOFTWARE;
+         bool enable_hash = false;
 
          int opt;
-         while ((opt = getopt(argc, argv, "i:d:c:v:h")) != -1) {
+         while ((opt = getopt(argc, argv, "i:d:c:v:m:h")) != -1) {
             switch (opt) {
                case 'i':
                   inputFile = optarg;
@@ -566,6 +592,9 @@ class FFmpegDemuxSeeker {
                   break;
                case 'c':
                   codecStr = optarg;
+                  break;
+               case 'm':
+                  enable_hash_str = optarg;
                   break;
                case 'v': 
                   loglevel = optarg;
@@ -585,6 +614,12 @@ class FFmpegDemuxSeeker {
             std::cerr << "Usage: " << argv[0] << " -i <input_file> -d <DecoderType: HW|SW> [-c <if decoderType is HW: codec_name>]\n";
             std::cerr << "  ex1: " << argv[0] << " -i <input_file> -d HW -c hevc_v4l2m2m\n";
             std::cerr << "  ex2: " << argv[0] << " -i <input_file> -d SW -c auto [for SW decode use auto]\n";
+            std::cerr << "Options: \n";
+            std::cerr << "\t -i input Media  \n";
+            std::cerr << "\t -d Decoder type HW or SW \n";
+            std::cerr << "\t -c ffmpeg codec to use (for SW decode use auto ) \n";
+            std::cerr << "\t -v verbose level ( info ,debug, trace )\n";
+            std::cerr << "\t -m md5sum of each frame (slower for high bitrate media )\n";
             return 1;
          }
          // Validate decoder option and codec option
@@ -598,12 +633,14 @@ class FFmpegDemuxSeeker {
 
             return 1;
          }
+         if (strncmp(enable_hash_str, "true", 4) == 0)
+            enable_hash = true;
 
          saveTerminalSettings();
 
 
          try {
-            FFmpegDemuxSeeker demux_seeker(inputFile, decoder, codecStr);
+            FFmpegDemuxSeeker demux_seeker(inputFile, decoder, codecStr, enable_hash);
             demux_seeker.run();
          } catch (const std::exception& ex) {
             std::cerr << "Error: " << ex.what() << "\n";
