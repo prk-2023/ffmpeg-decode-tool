@@ -607,7 +607,7 @@ class FFmpegDemuxSeeker {
             }
          }
          //check options
-         if (!inputFile || !decoderStr || !codecStr) {
+         if (!inputFile || !decoderStr || !codecStr ||!enable_hash_str) {
             std::cerr << "Error: Missing required options -i and/or -d\n";
             std::cerr << "Usage: " << argv[0]
                << " -i <input_file> -d <HW|SW> [-c <codec>]\n";
@@ -633,8 +633,9 @@ class FFmpegDemuxSeeker {
 
             return 1;
          }
-         if (strncmp(enable_hash_str, "true", 4) == 0)
+         if (strncmp(enable_hash_str, "true", 4) == 0) {
             enable_hash = true;
+         }
 
          saveTerminalSettings();
 
